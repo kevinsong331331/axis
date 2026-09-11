@@ -1,3 +1,4 @@
+import {mountProfitFeedback} from './profit-feedback.js';
 import {mountFullscreen} from './fullscreen.js';
 import {initialSimulation,simulationEquity,openSimulation,closeSimulation,liquidationPrice,validSimulation} from './simulation.js';
 import {priceForOrder,sizeForOrder,pnlFor,tickStep} from './math.js';
@@ -36,6 +37,7 @@ function lock(v){busy=v;for(const id of ['network','coin','connect','long-tab','
 async function execute(){const q=pending;if(!q||busy)return;lock(true);$('confirm-submit').disabled=true;let sent=false;try{const check=()=>{if(q.address!==address||q.network!==testnet||q.coin!==coin)throw Error('钱包或市场已改变，请重新确认');if(Date.now()-lastQuote>15000)throw Error('行情已过期，请重新确认')};check();const ex=await getExchange();await refreshAccount();check();if(!q.close&&position()&&((+position().szi>0)!==q.buy))throw Error('持仓方向已变化，请重新确认');if(q.close&&position()?.szi!==q.positionSize)throw Error('持仓已变化，请重新确认平仓数量');if(!q.close){await ex.updateLeverage({asset:q.asset,isCross:true,leverage:q.leverage});check()}const px=priceForOrder(price,q.buy,q.szDecimals);const cloid='0x'+Array.from(crypto.getRandomValues(new Uint8Array(16)),x=>x.toString(16).padStart(2,'0')).join('');sent=true;const r=await ex.order({orders:[{a:q.asset,b:q.buy,p:px,s:String(q.size),r:q.close,t:{limit:{tif:'Ioc'}},c:cloid}],grouping:'na'});const s=r.response?.data?.statuses?.[0];if(s?.error)throw Error(s.error);if(s?.filled)notify(`已成交 ${s.filled.totalSz} ${coin}，均价 ${fmt(s.filled.avgPx)} USDC`);else notify('订单已返回，请核对持仓；未成交部分已取消。');$('confirm').close();await refreshAccount()}catch(e){notify((sent?'请先刷新持仓核对成交结果，勿重复提交。':'')+(e.shortMessage||e.message||'交易失败'));$('confirm').close()}finally{pending=null;lock(false)}}
 $('connect').onclick=connect;$('coin').onchange=e=>{if(mode==='sim'&&simulation.position){e.target.value=coin;notify('请先平掉模拟持仓，再切换交易对');return}coin=e.target.value;resetMarket();refreshAccount().catch(()=>{})};$('network').onchange=e=>{testnet=e.target.value==='testnet';exchange=null;clearAccount();$('network-label').textContent=testnet?'测试网':'主网实盘';resetMarket();refreshAccount().catch(()=>{})};$('long-tab').onclick=()=>{side=true;$('long-tab').className='selected-long';$('short-tab').className='';renderOrder()};$('short-tab').onclick=()=>{side=false;$('short-tab').className='selected-short';$('long-tab').className='';renderOrder()};for(const id of ['amount','leverage'])$(id).oninput=renderOrder;document.querySelectorAll('[data-amount]').forEach(b=>b.onclick=()=>{if(busy)return;$('amount').value=b.dataset.amount;renderOrder()});$('trade').onclick=()=>prepare();$('refresh').onclick=async()=>{try{await refreshAccount();await marketSnapshot();notify(mode==='sim'?'模拟账户已刷新':address?'账户与行情已刷新':'行情已刷新，请连接钱包查看持仓')}catch(e){notify(e.message)}};$('confirm-submit').onclick=execute;
 if(window.ethereum?.on){window.ethereum.on('accountsChanged',()=>{address=null;exchange=null;clearAccount();$('connect').textContent='连接钱包 ↗';$('confirm').close();notify('钱包账户已变化，请重新连接')});window.ethereum.on('chainChanged',()=>{exchange=null})}
+const profitFeedback=mountProfitFeedback($('floating-profit'),$('profit-badge'),$('profit-sound'));
 function renderFloatingProfit(){
  const p=position(),hasAccount=mode==='sim'||!!account;
  const profit=p?(price>0?pnlFor(+p.szi,+p.entryPx,price):+p.unrealizedPnl):0;
@@ -49,13 +51,14 @@ function renderFloatingProfit(){
  $('floating-realized').className=simulation.realized>=0?'positive':'negative';
  const stale=Date.now()-lastQuote>15000||(mode==='real'&&address&&Date.now()-accountAt>20000);
  $('floating-status').textContent=stale?'数据同步中 · 收益暂未更新':'未扣手续费与资金费用';
+ profitFeedback.update({profit,hasPosition:!!p&&hasAccount,stale});
 }
 mountFullscreen($('chart-shell'),$('fullscreen-toggle'),$('floating-profit'));
 function recentSimulation(){const t=simulation.trades[0];if(!t)return '';return '<div class="sim-trades"><span>最近模拟平仓</span><b>'+t.coin+' / '+t.side+'</b><b class="'+(t.pnl>=0?'positive':'negative')+'">'+(t.pnl>=0?'+':'')+fmt(t.pnl)+' USDC</b><span>'+(t.liquidated?'保证金耗尽':'已结算')+'</span></div>'}
 $('sim-mode').onclick=()=>{if(busy||mode==='sim')return;mode='sim';applyMode()};$('real-mode').onclick=()=>{if(busy||mode==='real')return;if(simulation.position){notify('请先平掉模拟持仓，再切换实盘');return}mode='real';applyMode()};
 $('sim-source').onchange=e=>{if(simulation.position){e.target.value=simSource;notify('请先平掉模拟持仓，再切换行情来源');return}simSource=e.target.value;simulation.lastMark=0;saveSimulation();applyMode()};
 $('reset-sim').onclick=()=>$('reset-dialog').showModal();$('confirm-reset').onclick=()=>{simulation=initialSimulation();saveSimulation();$('reset-dialog').close();applyMode();notify('模拟账户已恢复为 1,000 USDC')};
-$('motion-toggle').onclick=()=>{motion=!motion;updateMotion()};function updateMotion(){$('motion-toggle').textContent='动效 '+(motion?'开':'关');$('motion-toggle').setAttribute('aria-pressed',String(motion))}updateMotion();
+$('motion-toggle').onclick=()=>{motion=!motion;updateMotion()};function updateMotion(){document.body.dataset.motion=motion?'on':'off';$('motion-toggle').textContent='动效 '+(motion?'开':'关');$('motion-toggle').setAttribute('aria-pressed',String(motion))}updateMotion();
 const canvas=$('gauge'),c=canvas.getContext('2d');let W=0,H=0;
 const particles=Array.from({length:140},()=>({x:Math.random(),y:Math.random(),r:.35+Math.random()*1.2,s:.3+Math.random()*.7,phase:Math.random()*6.28}));
 const resize=()=>{const box=$('chart').getBoundingClientRect();W=box.width;H=box.height;const dpr=Math.min(devicePixelRatio,2);canvas.width=W*dpr;canvas.height=H*dpr;c.setTransform(dpr,0,0,dpr,0,0)};new ResizeObserver(resize).observe($('chart'));
